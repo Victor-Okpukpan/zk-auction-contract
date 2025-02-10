@@ -2,7 +2,8 @@
 pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
-import {KeeperCompatibleInterface} from "@chainlink/contracts/src/v0.8/automation/interfaces/KeeperCompatibleInterface.sol";
+import {KeeperCompatibleInterface} from
+    "@chainlink/contracts/src/v0.8/automation/interfaces/KeeperCompatibleInterface.sol";
 import {PoseidonT3} from "@poseidon-solidity/contracts/PoseidonT3.sol";
 
 /**
@@ -10,7 +11,7 @@ import {PoseidonT3} from "@poseidon-solidity/contracts/PoseidonT3.sol";
  * @dev A commit-reveal sealed-bid NFT auction using Poseidon for bid commitments.
  *
  * The auction is divided into three phases:
- *  - Commit Phase: Bidders send their deposits and commit their bid by submitting a hash 
+ *  - Commit Phase: Bidders send their deposits and commit their bid by submitting a hash
  *    computed off-chain using Poseidon(bid, salt). This phase lasts from `startTime` to `commitEndTime`.
  *  - Reveal Phase: Bidders reveal their bid and salt. The contract re-computes the commitment
  *    on-chain using Poseidon and verifies it matches the stored commitment. This phase lasts
@@ -22,11 +23,11 @@ contract AuctionManager is KeeperCompatibleInterface {
     /// @notice Structure representing a committed bid.
     struct BidCommit {
         address bidder;
-        uint256 deposit;       // The funds deposited (should equal the bid amount)
+        uint256 deposit; // The funds deposited (should equal the bid amount)
         bytes32 bidCommitment; // Commitment computed off-chain via Poseidon(bid, salt)
-        bool revealed;         // Whether the bidder has revealed their bid
-        uint256 bidValue;      // The revealed bid value (set during the reveal phase)
-        bool refunded;         // Whether the deposit has been refunded
+        bool revealed; // Whether the bidder has revealed their bid
+        uint256 bidValue; // The revealed bid value (set during the reveal phase)
+        bool refunded; // Whether the deposit has been refunded
     }
 
     /// @notice Structure representing an auction.
@@ -34,11 +35,11 @@ contract AuctionManager is KeeperCompatibleInterface {
         address seller;
         address nftAddress;
         uint256 tokenId;
-        uint256 minBid;         // Minimum bid accepted (in wei)
-        uint256 startTime;      // Start time of the commit phase (Unix timestamp)
-        uint256 commitEndTime;  // End time of the commit phase (Unix timestamp)
-        uint256 revealEndTime;  // End time of the reveal phase (Unix timestamp)
-        bool closed;            // Whether the auction has been finalized
+        uint256 minBid; // Minimum bid accepted (in wei)
+        uint256 startTime; // Start time of the commit phase (Unix timestamp)
+        uint256 commitEndTime; // End time of the commit phase (Unix timestamp)
+        uint256 revealEndTime; // End time of the reveal phase (Unix timestamp)
+        bool closed; // Whether the auction has been finalized
         address highestBidder;
         BidCommit[] bids;
     }
@@ -119,11 +120,7 @@ contract AuctionManager is KeeperCompatibleInterface {
      * @param auctionId The auction identifier.
      * @param bidCommitment The bid commitment.
      */
-    function commitBid(uint256 auctionId, bytes32 bidCommitment)
-        external
-        payable
-        auctionExists(auctionId)
-    {
+    function commitBid(uint256 auctionId, bytes32 bidCommitment) external payable auctionExists(auctionId) {
         Auction storage auc = auctions[auctionId];
         require(block.timestamp >= auc.startTime, "Commit phase not started yet");
         require(block.timestamp < auc.commitEndTime, "Commit phase ended");
@@ -148,11 +145,7 @@ contract AuctionManager is KeeperCompatibleInterface {
      * @param bidValue The actual bid value.
      * @param salt The salt used in the commitment.
      */
-    function revealBid(
-        uint256 auctionId,
-        uint256 bidValue,
-        uint256 salt
-    ) external auctionExists(auctionId) {
+    function revealBid(uint256 auctionId, uint256 bidValue, uint256 salt) external auctionExists(auctionId) {
         Auction storage auc = auctions[auctionId];
         require(block.timestamp >= auc.commitEndTime, "Reveal phase not started yet");
         require(block.timestamp < auc.revealEndTime, "Reveal phase ended");
@@ -163,10 +156,7 @@ contract AuctionManager is KeeperCompatibleInterface {
             if (bidInstance.bidder == msg.sender && !bidInstance.revealed) {
                 // Compute the commitment on-chain using Poseidon.
                 uint256 computedCommitment = PoseidonT3.hash([bidValue, salt]);
-                require(
-                    computedCommitment == uint256(bidInstance.bidCommitment),
-                    "Invalid reveal: commitment mismatch"
-                );
+                require(computedCommitment == uint256(bidInstance.bidCommitment), "Invalid reveal: commitment mismatch");
                 bidInstance.bidValue = bidValue;
                 bidInstance.revealed = true;
                 found = true;
@@ -206,7 +196,7 @@ contract AuctionManager is KeeperCompatibleInterface {
 
         // Send the winning deposit to the seller.
         uint256 winningDeposit = auc.bids[winningIndex].deposit;
-        (bool sentSeller, ) = auc.seller.call{value: winningDeposit}("");
+        (bool sentSeller,) = auc.seller.call{value: winningDeposit}("");
         require(sentSeller, "Transfer to seller failed");
 
         // Refund deposits for all losing bids.
@@ -214,7 +204,7 @@ contract AuctionManager is KeeperCompatibleInterface {
             if (i != winningIndex && !auc.bids[i].refunded) {
                 uint256 refundAmount = auc.bids[i].deposit;
                 auc.bids[i].refunded = true;
-                (bool sentRefund, ) = auc.bids[i].bidder.call{value: refundAmount}("");
+                (bool sentRefund,) = auc.bids[i].bidder.call{value: refundAmount}("");
                 require(sentRefund, "Refund failed");
                 emit RefundIssued(auctionId, auc.bids[i].bidder, refundAmount);
             }
@@ -236,7 +226,7 @@ contract AuctionManager is KeeperCompatibleInterface {
             if (bidInstance.bidder == msg.sender && !bidInstance.refunded && msg.sender != auc.highestBidder) {
                 refundAmount = bidInstance.deposit;
                 bidInstance.refunded = true;
-                (bool sent, ) = msg.sender.call{value: refundAmount}("");
+                (bool sent,) = msg.sender.call{value: refundAmount}("");
                 require(sent, "Refund failed");
                 emit RefundIssued(auctionId, msg.sender, refundAmount);
                 return;
@@ -250,7 +240,7 @@ contract AuctionManager is KeeperCompatibleInterface {
      * @return upkeepNeeded True if at least one auction is ready to be finalized.
      * @return performData Encoded data containing the list of auction IDs to finalize.
      */
-    function checkUpkeep(bytes calldata /* checkData */)
+    function checkUpkeep(bytes calldata /* checkData */ )
         external
         view
         override
@@ -302,12 +292,7 @@ contract AuctionManager is KeeperCompatibleInterface {
      * @notice ERC721 receiver function to allow safe transfers.
      * @return The selector confirming the token transfer.
      */
-    function onERC721Received(
-        address,
-        address,
-        uint256,
-        bytes calldata
-    ) external pure returns (bytes4) {
+    function onERC721Received(address, address, uint256, bytes calldata) external pure returns (bytes4) {
         return this.onERC721Received.selector;
     }
 }
