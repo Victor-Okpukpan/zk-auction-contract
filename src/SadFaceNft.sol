@@ -33,22 +33,22 @@ contract SadFaceNft is ERC721 {
             revert ERC721Metadata__URI_QueryFor_NonExistentToken();
         }
         return string(
-            abi.encodePacked(
-                _baseURI(),
-                Base64.encode(
-                    bytes(
-                        abi.encodePacked(
-                            '{"name: "',
-                            name(),
-                            '", description: "An NFT that is always sad", "attributes": [{"trait_type": "Mood", "value": Sad}], "image": ',
-                            s_imageUri,
-                            '"}'
-                        )
+        abi.encodePacked(
+            _baseURI(),
+            Base64.encode(
+                bytes(
+                    abi.encodePacked(
+                        '{"name": "',
+                        name(),
+                        '", "description": "An NFT that is always sad", ',
+                        '"attributes": [{"trait_type": "Mood", "value": "Sad"}], ',
+                        '"image": "',
+                        s_imageUri,
+                        '"}'
                     )
                 )
             )
-        );
-    }
-
-    
+        )
+    );
+    }  
 }
