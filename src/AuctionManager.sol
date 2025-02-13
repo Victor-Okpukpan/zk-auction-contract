@@ -22,24 +22,8 @@ import {PoseidonT3} from "@poseidon-solidity/contracts/PoseidonT3.sol";
  *    This phase lasts from `startTime` to `commitEndTime`.
  *  - Reveal Phase: Bidders reveal their bid and salt. The contract re-computes the commitment on-chain using Poseidon
  *    and verifies it matches the stored commitment. This phase lasts from `commitEndTime` to `revealEndTime`.
- *  - Finalization: After the reveal phase, the auction is finalized. The highest revealed bid wins, the NFT is transferred
- *    to the winner, the seller receives the winning deposit, and losing deposits are refunded.
+ *  - Finalization: After the reveal phase, the auction is finalized. The highest revealed bid wins, the NFT is transferred to the winner, the seller receives the winning deposit, and losing deposits are refunded.
  */
-interface IZkVerifyAttestation {
-    function submitAttestation(uint256 _attestationId, bytes32 _proofsAttestation) external;
-
-    function submitAttestationBatch(uint256[] calldata _attestationIds, bytes32[] calldata _proofsAttestation)
-        external;
-
-    function verifyProofAttestation(
-        uint256 _attestationId,
-        bytes32 _leaf,
-        bytes32[] calldata _merklePath,
-        uint256 _leafCount,
-        uint256 _index
-    ) external returns (bool);
-}
-
 contract AuctionManager is KeeperCompatibleInterface {
     // ======================================================
     // DATA STRUCTURES
@@ -77,9 +61,6 @@ contract AuctionManager is KeeperCompatibleInterface {
     uint256 public auctionCounter;
     mapping(uint256 => Auction) public auctions;
     uint256[] public activeAuctions;
-
-    /// The address of the ZkvAttestationContract
-    address public immutable zkvContract = 0x82941a739E74eBFaC72D0d0f8E81B1Dac2f586D5;
 
     // Maximum bids allowed per auction
     uint256 constant MAX_BIDS = 100;
@@ -176,34 +157,19 @@ contract AuctionManager is KeeperCompatibleInterface {
      * @notice Allows bidders to commit their bid during the commit phase of the auction.
      * @dev
      * - The bidder submits a bid commitment computed off-chain as Poseidon(bid, salt).
-     * - A proof of attestation is required to verify the bidder's eligibility.
      * - The bid is stored securely without revealing the actual bid amount.
      * - The bid commitment is only revealed during the reveal phase.
-     * @param attestationId The unique identifier of the attestation confirming bidder eligibility.
-     * @param merklePath The Merkle proof path validating the attestation inclusion.
-     * @param leafCount The total number of leaves in the Merkle tree.
-     * @param index The position of the attestation in the Merkle tree.
      * @param auctionId The unique identifier of the auction.
      * @param bidCommitment The hashed commitment of the bid value.
      */
-    function proveAttestationAndCommitBid(
-        uint256 attestationId,
-        bytes32 leaf,
-        bytes32[] calldata merklePath,
-        uint256 leafCount,
-        uint256 index,
+    function commitBid(
         uint256 auctionId,
         uint256 bidCommitment
-    ) external payable auctionExists(auctionId) {
+    ) public payable auctionExists(auctionId) {
         Auction storage auc = auctions[auctionId];
         require(block.timestamp >= auc.startTime, "Commit phase not started yet");
         require(block.timestamp < auc.commitEndTime, "Commit phase ended");
         require(auc.bids.length < MAX_BIDS, "Max bids reached");
-
-        require(
-            IZkVerifyAttestation(zkvContract).verifyProofAttestation(attestationId, leaf, merklePath, leafCount, index),
-            "Invalid proof"
-        );
 
         require(msg.value >= auc.minBid, "Deposit below minimum bid");
         for (uint256 i = 0; i < auc.bids.length; i++) {
@@ -351,7 +317,6 @@ contract AuctionManager is KeeperCompatibleInterface {
             // Transfer NFT back to seller (owner)
             IERC721(auc.nftAddress).safeTransferFrom(address(this), auc.seller, auc.tokenId);
             emit AuctionClosed(auctionId, auc.seller, 0);
-            _removeActiveAuction(auctionId);
             return;
         }
 
@@ -385,22 +350,6 @@ contract AuctionManager is KeeperCompatibleInterface {
             }
         }
         emit AuctionClosed(auctionId, auc.highestBidder, auc.highestBidValue);
-        _removeActiveAuction(auctionId);
-    }
-
-    /**
-     * @dev Internal function to remove an auction from the activeAuctions array.
-     * @param auctionId The auction identifier to remove.
-     */
-    function _removeActiveAuction(uint256 auctionId) internal {
-        uint256 length = activeAuctions.length;
-        for (uint256 i = 0; i < length; i++) {
-            if (activeAuctions[i] == auctionId) {
-                activeAuctions[i] = activeAuctions[length - 1];
-                activeAuctions.pop();
-                break;
-            }
-        }
     }
 
     // ======================================================
