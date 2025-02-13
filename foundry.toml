@@ -5,4 +5,6 @@ libs = ["lib"]
 
 remappings = ["@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts", "@chainlink/contracts/=lib/chainlink/contracts/", "@poseidon-solidity/=lib/poseidon-solidity/"]
 
+libraries = ["lib/poseidon-solidity/contracts/PoseidonT3.sol:PoseidonT3:0x27071808Dd8f080afb3a61BE6179Ec8c5c5cbE48"]
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

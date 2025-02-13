@@ -25,6 +25,21 @@ import {PoseidonT3} from "@poseidon-solidity/contracts/PoseidonT3.sol";
  *  - Finalization: After the reveal phase, the auction is finalized. The highest revealed bid wins, the NFT is transferred
  *    to the winner, the seller receives the winning deposit, and losing deposits are refunded.
  */
+interface IZkVerifyAttestation {
+    function submitAttestation(uint256 _attestationId, bytes32 _proofsAttestation) external;
+
+    function submitAttestationBatch(uint256[] calldata _attestationIds, bytes32[] calldata _proofsAttestation)
+        external;
+
+    function verifyProofAttestation(
+        uint256 _attestationId,
+        bytes32 _leaf,
+        bytes32[] calldata _merklePath,
+        uint256 _leafCount,
+        uint256 _index
+    ) external returns (bool);
+}
+
 contract AuctionManager is KeeperCompatibleInterface {
     // ======================================================
     // DATA STRUCTURES
@@ -34,7 +49,7 @@ contract AuctionManager is KeeperCompatibleInterface {
     struct BidCommit {
         address bidder;
         uint256 deposit; // The funds deposited (should equal the bid amount)
-        bytes32 bidCommitment; // Commitment computed off-chain via Poseidon(bid, salt)
+        uint256 bidCommitment; // Commitment computed off-chain via Poseidon(bid, salt)
         bool revealed; // Whether the bidder has revealed their bid
         uint256 bidValue; // The revealed bid value (set during the reveal phase)
         bool refunded; // Whether the deposit has been refunded
@@ -52,6 +67,7 @@ contract AuctionManager is KeeperCompatibleInterface {
         uint256 revealEndTime; // End time of the reveal phase (Unix timestamp)
         bool closed; // Whether the auction has been finalized
         address highestBidder;
+        uint256 highestBidValue; // The highest bid value revealed so far
         BidCommit[] bids;
     }
 
@@ -61,6 +77,14 @@ contract AuctionManager is KeeperCompatibleInterface {
     uint256 public auctionCounter;
     mapping(uint256 => Auction) public auctions;
     uint256[] public activeAuctions;
+
+    /// The address of the ZkvAttestationContract
+    address public immutable zkvContract = 0x82941a739E74eBFaC72D0d0f8E81B1Dac2f586D5;
+
+    // Maximum bids allowed per auction
+    uint256 constant MAX_BIDS = 100;
+    // Maximum number of auctions to finalize in one keeper upkeep call
+    uint256 constant MAX_AUCTIONS_PER_UPKEEP = 5;
 
     // ======================================================
     // EVENTS
@@ -135,6 +159,7 @@ contract AuctionManager is KeeperCompatibleInterface {
         newAuction.commitEndTime = commitEndTime;
         newAuction.revealEndTime = revealEndTime;
         newAuction.closed = false;
+        // highestBidder remains address(0) and highestBidValue defaults to 0
 
         // Add auction to the active auctions list.
         activeAuctions.push(auctionCounter);
@@ -148,16 +173,42 @@ contract AuctionManager is KeeperCompatibleInterface {
     // BID COMMIT PHASE FUNCTIONS
     // ======================================================
     /**
-     * @notice Commit phase: Bidders call this function to commit their bid.
-     * @dev The bidder sends a deposit (msg.value) and a bid commitment computed off-chain as Poseidon(bid, salt).
-     * @param auctionId The auction identifier.
-     * @param bidCommitment The bid commitment.
+     * @notice Allows bidders to commit their bid during the commit phase of the auction.
+     * @dev
+     * - The bidder submits a bid commitment computed off-chain as Poseidon(bid, salt).
+     * - A proof of attestation is required to verify the bidder's eligibility.
+     * - The bid is stored securely without revealing the actual bid amount.
+     * - The bid commitment is only revealed during the reveal phase.
+     * @param attestationId The unique identifier of the attestation confirming bidder eligibility.
+     * @param merklePath The Merkle proof path validating the attestation inclusion.
+     * @param leafCount The total number of leaves in the Merkle tree.
+     * @param index The position of the attestation in the Merkle tree.
+     * @param auctionId The unique identifier of the auction.
+     * @param bidCommitment The hashed commitment of the bid value.
      */
-    function commitBid(uint256 auctionId, bytes32 bidCommitment) external payable auctionExists(auctionId) {
+    function proveAttestationAndCommitBid(
+        uint256 attestationId,
+        bytes32 leaf,
+        bytes32[] calldata merklePath,
+        uint256 leafCount,
+        uint256 index,
+        uint256 auctionId,
+        uint256 bidCommitment
+    ) external payable auctionExists(auctionId) {
         Auction storage auc = auctions[auctionId];
         require(block.timestamp >= auc.startTime, "Commit phase not started yet");
         require(block.timestamp < auc.commitEndTime, "Commit phase ended");
+        require(auc.bids.length < MAX_BIDS, "Max bids reached");
+
+        require(
+            IZkVerifyAttestation(zkvContract).verifyProofAttestation(attestationId, leaf, merklePath, leafCount, index),
+            "Invalid proof"
+        );
+
         require(msg.value >= auc.minBid, "Deposit below minimum bid");
+        for (uint256 i = 0; i < auc.bids.length; i++) {
+            require(auc.bids[i].bidder != msg.sender, "Bid already submitted");
+        }
 
         // Create and store a new bid commitment.
         BidCommit memory newBid = BidCommit({
@@ -197,6 +248,11 @@ contract AuctionManager is KeeperCompatibleInterface {
                 require(computedCommitment == uint256(bidInstance.bidCommitment), "Invalid reveal: commitment mismatch");
                 bidInstance.bidValue = bidValue;
                 bidInstance.revealed = true;
+                // Update highest bid if applicable.
+                if (bidValue > auc.highestBidValue) {
+                    auc.highestBidValue = bidValue;
+                    auc.highestBidder = msg.sender;
+                }
                 found = true;
                 emit BidRevealed(auctionId, msg.sender, bidValue);
                 break;
@@ -245,9 +301,10 @@ contract AuctionManager is KeeperCompatibleInterface {
         returns (bool upkeepNeeded, bytes memory performData)
     {
         uint256 activeCount = activeAuctions.length;
-        uint256[] memory auctionsToFinalize = new uint256[](activeCount);
+        uint256[] memory auctionsToFinalize = new uint256[](MAX_AUCTIONS_PER_UPKEEP);
         uint256 count = 0;
-        for (uint256 i = 0; i < activeCount; i++) {
+        // Limit the number of auctions to process per upkeep.
+        for (uint256 i = 0; i < activeCount && count < MAX_AUCTIONS_PER_UPKEEP; i++) {
             uint256 auctionId = activeAuctions[i];
             Auction storage auc = auctions[auctionId];
             if (!auc.closed && block.timestamp >= auc.revealEndTime) {
@@ -288,18 +345,8 @@ contract AuctionManager is KeeperCompatibleInterface {
         require(block.timestamp >= auc.revealEndTime, "Auction reveal phase not ended yet");
         require(!auc.closed, "Auction already finalized");
 
-        // Identify the highest bid.
-        uint256 winningBidValue = 0;
-        uint256 winningIndex = type(uint256).max;
-        for (uint256 i = 0; i < auc.bids.length; i++) {
-            if (auc.bids[i].revealed && auc.bids[i].bidValue > winningBidValue) {
-                winningBidValue = auc.bids[i].bidValue;
-                winningIndex = i;
-            }
-        }
-
         // If no valid bid is revealed, send the NFT back to the seller (owner)
-        if (winningIndex == type(uint256).max) {
+        if (auc.highestBidValue == 0) {
             auc.closed = true;
             // Transfer NFT back to seller (owner)
             IERC721(auc.nftAddress).safeTransferFrom(address(this), auc.seller, auc.tokenId);
@@ -308,21 +355,28 @@ contract AuctionManager is KeeperCompatibleInterface {
             return;
         }
 
+        // Retrieve the winning deposit.
+        uint256 winningDeposit = 0;
+        for (uint256 i = 0; i < auc.bids.length; i++) {
+            if (auc.bids[i].bidder == auc.highestBidder) {
+                winningDeposit = auc.bids[i].deposit;
+                break;
+            }
+        }
+
         // Set the winner and mark auction as closed.
-        auc.highestBidder = auc.bids[winningIndex].bidder;
         auc.closed = true;
 
         // Transfer the NFT to the highest bidder.
         IERC721(auc.nftAddress).safeTransferFrom(address(this), auc.highestBidder, auc.tokenId);
 
         // Transfer the winning deposit to the seller.
-        uint256 winningDeposit = auc.bids[winningIndex].deposit;
         (bool sentSeller,) = auc.seller.call{value: winningDeposit}("");
         require(sentSeller, "Transfer to seller failed");
 
         // Refund deposits for all other (losing) bids.
         for (uint256 i = 0; i < auc.bids.length; i++) {
-            if (i != winningIndex && !auc.bids[i].refunded) {
+            if (auc.bids[i].bidder != auc.highestBidder && !auc.bids[i].refunded) {
                 uint256 refundAmount = auc.bids[i].deposit;
                 auc.bids[i].refunded = true;
                 (bool sentRefund,) = auc.bids[i].bidder.call{value: refundAmount}("");
@@ -330,7 +384,7 @@ contract AuctionManager is KeeperCompatibleInterface {
                 emit RefundIssued(auctionId, auc.bids[i].bidder, refundAmount);
             }
         }
-        emit AuctionClosed(auctionId, auc.highestBidder, winningBidValue);
+        emit AuctionClosed(auctionId, auc.highestBidder, auc.highestBidValue);
         _removeActiveAuction(auctionId);
     }
 
