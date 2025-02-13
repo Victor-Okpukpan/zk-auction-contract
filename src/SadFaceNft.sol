@@ -13,7 +13,7 @@ contract SadFaceNft is ERC721 {
 
     event MintedNFT(uint256 indexed tokenId);
 
-    constructor(string memory ImageUri) ERC721("SadFace NFT", "SF") {
+    constructor(string memory ImageUri) ERC721("Sad Face", "SF") {
         s_tokenCounter = 0;
         s_imageUri = ImageUri;
     }
